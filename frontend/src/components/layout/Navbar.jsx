@@ -1,0 +1,2 @@
+import {Bell,Search} from 'lucide-react';import {useAuth} from '../../context/AuthContext';
+export default function Navbar(){const {user}=useAuth();return <header className="topbar"><div className="search"><Search size={17}/><input placeholder="Search leads, students, sources…"/></div><div className="top-actions"><button className="icon-btn"><Bell size={19}/><i/></button><div className="top-user"><div><b>{user?.name}</b><small>{user?.office||'All offices'}</small></div><div className="avatar">{(user?.name||'U')[0]}</div></div></div></header>}

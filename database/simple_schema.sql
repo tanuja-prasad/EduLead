@@ -1,0 +1,19 @@
+-- EduLead simple database explanation (Django creates the real tables with migrations)
+-- 1. auth_user        -> username/password/name/email (Django built-in)
+-- 2. crm_office       -> each branch and monthly expense
+-- 3. crm_employee     -> user + role + office
+-- 4. crm_lead         -> student enquiry and assignment
+-- 5. crm_leadactivity -> remarks/status/contact history
+-- 6. crm_followup     -> counsellor reminders
+-- 7. crm_admission    -> successful admission + actual revenue
+-- 8. crm_prediction   -> ML probability + priority + expected revenue
+
+-- Main relationships:
+-- Office 1 ---- many Employee
+-- Office 1 ---- many Lead
+-- Employee(manager) 1 ---- many Lead
+-- Employee(counsellor) 1 ---- many Lead
+-- Lead 1 ---- many LeadActivity
+-- Lead 1 ---- many FollowUp
+-- Lead 1 ---- 0/1 Admission
+-- Lead 1 ---- many Prediction
