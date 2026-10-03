@@ -1,15 +1,20 @@
-# Environment variables / secrets
+# Python virtual environments
+env/
+backend/env/
+venv/
+.venv/
+
+# Environment/secrets
 .env
 .env.*
 backend/.env
+frontend/.env
 
-# Python
+# Python cache
 __pycache__/
 *.pyc
-env/
-venv/
 
-# Node
+# Frontend
 node_modules/
 dist/
 
