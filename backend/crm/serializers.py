@@ -1,7 +1,7 @@
 from django.contrib.auth.models import User
 from rest_framework import serializers
 
-from .models import Admission, Employee, FollowUp, Lead, LeadActivity, Office, Prediction
+from .models import Admission, CallTranscript, Employee, FollowUp, Lead, LeadActivity, Meeting, Office, Prediction
 
 
 class OfficeSerializer(serializers.ModelSerializer):
@@ -119,3 +119,31 @@ class PredictionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Prediction
         fields = "__all__"
+
+
+class CallTranscriptSerializer(serializers.ModelSerializer):
+    counsellor_name = serializers.SerializerMethodField()
+
+    def get_counsellor_name(self, obj):
+        if not obj.counsellor:
+            return "Unknown"
+        return obj.counsellor.user.get_full_name() or obj.counsellor.user.email
+
+    class Meta:
+        model = CallTranscript
+        fields = "__all__"
+        read_only_fields = ["counsellor"]
+
+
+class MeetingSerializer(serializers.ModelSerializer):
+    student_name = serializers.CharField(source="lead.student_name", read_only=True)
+    student_email = serializers.CharField(source="lead.email", read_only=True)
+    counsellor_name = serializers.SerializerMethodField()
+
+    def get_counsellor_name(self, obj):
+        return obj.counsellor.user.get_full_name() or obj.counsellor.user.email
+
+    class Meta:
+        model = Meeting
+        fields = "__all__"
+        read_only_fields = ["counsellor", "meeting_url", "invitation_sent"]

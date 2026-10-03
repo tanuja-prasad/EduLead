@@ -3,9 +3,11 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     AdmissionViewSet,
+    CallTranscriptViewSet,
     EmployeeViewSet,
     FollowUpViewSet,
     LeadViewSet,
+    MeetingViewSet,
     OfficeViewSet,
     dashboard,
     login,
@@ -20,6 +22,8 @@ router.register("employees", EmployeeViewSet, basename="employee")
 router.register("leads", LeadViewSet, basename="lead")
 router.register("followups", FollowUpViewSet, basename="followup")
 router.register("admissions", AdmissionViewSet, basename="admission")
+router.register("call-transcripts", CallTranscriptViewSet, basename="call-transcript")
+router.register("meetings", MeetingViewSet, basename="meeting")
 
 urlpatterns = [
     path("auth/offices/", public_offices),

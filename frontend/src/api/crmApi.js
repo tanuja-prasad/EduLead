@@ -13,3 +13,8 @@ export const addHistory = (id, data) => api.post(`leads/${id}/history/`, data).t
 export const predictLead = (id) => api.post(`leads/${id}/predict/`).then((response) => response.data);
 export const getFollowups = () => api.get("followups/").then((response) => response.data.results || response.data);
 export const addFollowup = (data) => api.post("followups/", data).then((response) => response.data);
+export const predictAllLeads = () => api.post("leads/predict-all/").then((response) => response.data);
+export const getCallTranscripts = (leadId) => api.get("call-transcripts/", { params: { lead: leadId } }).then((response) => response.data.results || response.data);
+export const saveCallTranscript = (data) => api.post("call-transcripts/", data).then((response) => response.data);
+export const getMeetings = (leadId) => api.get("meetings/", { params: leadId ? { lead: leadId } : {} }).then((response) => response.data.results || response.data);
+export const scheduleMeeting = (data) => api.post("meetings/", data).then((response) => response.data);

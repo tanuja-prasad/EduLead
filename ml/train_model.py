@@ -1,4 +1,9 @@
+"""
+EduLead admission model.
 
+For a real consultancy, replace demo_training_data.csv with exported historical leads.
+Target column: converted (1 = admission, 0 = not converted).
+"""
 
 from pathlib import Path
 

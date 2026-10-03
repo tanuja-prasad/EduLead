@@ -2,15 +2,14 @@ import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 
 import {
-  addFollowup,
   addHistory,
   getHistory,
   getLead,
-  predictLead,
   updateLeadStatus,
 } from "../../api/crmApi";
 import StatusBadge from "../../components/common/StatusBadge";
 import LeadTimeline from "../../components/leads/LeadTimeline";
+import EngagementPanel from "../../components/leads/EngagementPanel";
 import { STATUS_LABELS } from "../../utils/constants";
 
 export default function LeadDetails() {
@@ -40,26 +39,6 @@ export default function LeadDetails() {
     await load();
   }
 
-  async function scheduleFollowup() {
-    const followupAt = window.prompt("Follow-up date/time, example: 2026-10-02T17:00:00");
-    const note = window.prompt("Follow-up note");
-
-    if (followupAt) {
-      await addFollowup({
-        lead: Number(id),
-        counsellor: lead.assigned_counsellor,
-        followup_at: followupAt,
-        note: note || "",
-      });
-      await load();
-    }
-  }
-
-  async function runPrediction() {
-    await predictLead(id);
-    await load();
-  }
-
   if (!lead) return <div>Loading...</div>;
 
   const prediction = lead.latest_prediction;
@@ -82,8 +61,6 @@ export default function LeadDetails() {
             {Object.entries(STATUS_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
-        <button className="btn soft" onClick={scheduleFollowup}>+ Schedule Follow-up</button>
-        <button className="btn primary" onClick={runPrediction}>Run ML Prediction</button>
       </div>
 
       <div className="grid-2 detail-grid">
@@ -119,6 +96,7 @@ export default function LeadDetails() {
           <LeadTimeline items={history} />
         </section>
       </div>
+      <EngagementPanel lead={lead} onChanged={load} />
     </>
   );
 }

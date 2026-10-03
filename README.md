@@ -163,3 +163,42 @@ Managers can create real/manual enquiries from **Manager → Leads → Add Lead*
 - Refreshing a protected dashboard reloads `/api/me/` and then each page reloads its data from Django/MySQL.
 - If both tokens are expired/invalid, the user is safely returned to login instead of seeing raw token errors.
 - ML prediction falls back to the demo scoring method if an old joblib/scikit-learn artifact cannot be loaded; retraining in the backend environment remains recommended.
+
+## Engagement & Automation Features (Oct 2026)
+
+### 1. Counsellor call transcript
+Counsellor Lead Details now contains **Call & Transcript**. `tel:` launches the device call handler and Chrome/Edge Web Speech API can capture microphone speech into an editable transcript. Saving creates a `CallTranscript` row. Managers can read transcripts for leads in their office.
+
+**Important:** browser speech recognition cannot directly capture both sides of a PSTN/mobile phone call. For production two-sided automatic phone transcription, integrate a consent-aware telephony provider (for example Twilio) plus a speech-to-text service. The current implementation is a working browser-microphone prototype and stores transcripts in MySQL.
+
+### 2. Virtual counselling meeting + calendar email
+Counsellors can choose a date/time and schedule a virtual meeting. EduLead generates a unique Jitsi meeting URL, stores it in `Meeting`, and sends the student an email with an `.ics` calendar invitation. Development defaults to Django's console email backend. For real delivery set SMTP values in `backend/.env` (see `.env.example`).
+
+### 3. Follow-up calendar/time + reminders
+Counsellors use a native date/time picker. `FollowupReminder` checks pending follow-ups while the authenticated CRM is open and shows an in-app/browser notification 5 minutes before and at due time. Browser notification permission must be allowed. A production deployment that must notify even when the browser is closed should add a server-side scheduler such as Celery/Redis or a managed job service.
+
+### 4. Bulk ML prediction
+Manager Lead Management has **Run ML Predictions** and Counsellor My Leads has **Predict My Leads**. One request to `POST /api/leads/predict-all/` predicts every active visible lead (excluding ENROLLED and LOST), stores prediction rows, and refreshes the lead list/dashboard metrics. Role/office scoping still happens in Django.
+
+### Database update required
+Two new Django models were added: `CallTranscript` and `Meeting`. From `backend` run:
+
+```bash
+python manage.py makemigrations crm
+python manage.py migrate
+```
+
+### Real email setup
+Copy `.env.example` values into `.env` and set:
+
+```env
+EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=your-email@example.com
+EMAIL_HOST_PASSWORD=your-app-password
+DEFAULT_FROM_EMAIL=your-email@example.com
+```
+
+Use an app password/provider credential rather than a normal mailbox password. Do not commit `.env`.

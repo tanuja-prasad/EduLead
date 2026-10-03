@@ -1,1 +1,5 @@
-import {Outlet} from 'react-router-dom';import Sidebar from './Sidebar';import Navbar from './Navbar';export default function DashboardLayout(){return <div className="app-shell"><Sidebar/><section className="main-shell"><Navbar/><main className="page"><Outlet/></main></section></div>}
+import { Outlet } from "react-router-dom";
+import FollowupReminder from "../common/FollowupReminder";
+import Sidebar from "./Sidebar";
+import Navbar from "./Navbar";
+export default function DashboardLayout(){return <div className="app-shell"><Sidebar/><section className="main-shell"><Navbar/><main className="page"><Outlet/></main></section><FollowupReminder/></div>}

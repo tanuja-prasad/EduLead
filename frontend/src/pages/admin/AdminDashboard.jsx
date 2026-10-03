@@ -37,7 +37,7 @@ export default function AdminDashboard() {
       <div className="stats-grid">
         <StatCard title="Total Revenue" value={currency(data.total_revenue)} icon={IndianRupee} subtitle="Confirmed admissions" />
         <StatCard title="Expected Additional Revenue" value={currency(data.expected_revenue)} icon={Sparkles} subtitle="ML probability weighted active leads" />
-        <StatCard title="Expected Admissions" value={Math.round(Number(data.expected_admissions || 0))} icon={TrendingUp} subtitle="Sum of lead probabilities" />
+        <StatCard title="Expected Admissions" value={Math.round(Number(data.expected_admissions || 0))} icon={TrendingUp} subtitle="ML estimated admission count" />
         <StatCard title="Projected Profit" value={currency(data.projected_profit)} icon={Building2} subtitle="Confirmed + expected revenue - branch expenses" />
       </div>
 

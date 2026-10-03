@@ -1,4 +1,9 @@
 import os
+import uuid
+from datetime import timedelta, timezone as dt_timezone
+
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
@@ -11,13 +16,15 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Admission, Employee, FollowUp, Lead, LeadActivity, Office, Prediction
+from .models import Admission, CallTranscript, Employee, FollowUp, Lead, LeadActivity, Meeting, Office, Prediction
 from .serializers import (
     AdmissionSerializer,
+    CallTranscriptSerializer,
     EmployeeSerializer,
     FollowUpSerializer,
     LeadActivitySerializer,
     LeadSerializer,
+    MeetingSerializer,
     OfficeSerializer,
     PredictionSerializer,
     SignupSerializer,
@@ -294,6 +301,39 @@ class LeadViewSet(viewsets.ModelViewSet):
         return Response(PredictionSerializer(prediction).data)
 
 
+    @action(detail=False, methods=["post"], url_path="predict-all")
+    def predict_all(self, request):
+        """Predict every active lead visible to the logged-in user in one request."""
+        employee = current_employee(request)
+        if employee.role not in [Employee.ADMIN, Employee.MANAGER, Employee.COUNSELLOR]:
+            return Response({"detail": "Prediction is not available for this role."}, status=403)
+
+        leads = self.get_queryset().exclude(status__in=["ENROLLED", "LOST"])
+        predicted = 0
+        failed = []
+        for lead in leads:
+            try:
+                result = predict_lead(lead)
+                Prediction.objects.create(
+                    lead=lead,
+                    admission_probability=result["probability"],
+                    priority=result["priority"],
+                    expected_revenue=result["expected_revenue"],
+                    model_version=result["model_version"],
+                )
+                predicted += 1
+            except Exception as exc:
+                failed.append({"lead_id": lead.id, "error": str(exc)})
+
+        return Response({
+            "total_eligible": leads.count(),
+            "predicted": predicted,
+            "failed": len(failed),
+            "failed_leads": failed[:10],
+            "run_at": timezone.now(),
+        })
+
+
 class FollowUpViewSet(viewsets.ModelViewSet):
     serializer_class = FollowUpSerializer
 
@@ -322,6 +362,110 @@ class AdmissionViewSet(viewsets.ModelViewSet):
         if employee.role == Employee.ADMIN:
             return queryset
         return queryset.filter(lead__office=employee.office)
+
+
+def _lead_accessible(employee, lead):
+    if employee.role == Employee.ADMIN:
+        return True
+    if employee.role == Employee.MANAGER:
+        return lead.office_id == employee.office_id
+    return lead.assigned_counsellor_id == employee.id
+
+
+class CallTranscriptViewSet(viewsets.ModelViewSet):
+    serializer_class = CallTranscriptSerializer
+
+    def get_queryset(self):
+        employee = current_employee(self.request)
+        qs = CallTranscript.objects.select_related("lead", "counsellor__user", "lead__office").order_by("-created_at")
+        lead_id = self.request.query_params.get("lead")
+        if lead_id:
+            qs = qs.filter(lead_id=lead_id)
+        if employee.role == Employee.ADMIN:
+            return qs
+        if employee.role == Employee.MANAGER:
+            return qs.filter(lead__office=employee.office)
+        return qs.filter(counsellor=employee)
+
+    def perform_create(self, serializer):
+        employee = current_employee(self.request)
+        if employee.role != Employee.COUNSELLOR:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only counsellors can save call transcripts.")
+        lead = serializer.validated_data["lead"]
+        if lead.assigned_counsellor_id != employee.id:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("This lead is not assigned to you.")
+        transcript = serializer.save(counsellor=employee, ended_at=timezone.now())
+        LeadActivity.objects.create(
+            lead=lead, employee=employee, activity_type="CALL",
+            remark=f"Call transcript saved: {transcript.transcript[:180]}",
+        )
+
+
+def _send_meeting_invitation(meeting):
+    lead = meeting.lead
+    if not lead.email:
+        return False
+    start = meeting.scheduled_at
+    end = start + timedelta(minutes=meeting.duration_minutes)
+    stamp = lambda dt: dt.astimezone(dt_timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ics = "\r\n".join([
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//EduLead CRM//EN",
+        "BEGIN:VEVENT", f"UID:edulead-meeting-{meeting.id}@edulead",
+        f"DTSTAMP:{stamp(timezone.now())}", f"DTSTART:{stamp(start)}", f"DTEND:{stamp(end)}",
+        f"SUMMARY:EduLead counselling meeting - {lead.student_name}",
+        f"DESCRIPTION:Join virtual counselling meeting: {meeting.meeting_url}",
+        f"LOCATION:{meeting.meeting_url}", "END:VEVENT", "END:VCALENDAR", ""
+    ])
+    subject = f"EduLead counselling meeting - {start.astimezone().strftime('%d %b %Y, %I:%M %p')}"
+    body = (
+        f"Hello {lead.student_name},\n\nYour counselling meeting has been scheduled for "
+        f"{start.astimezone().strftime('%d %b %Y at %I:%M %p')}.\n"
+        f"Join meeting: {meeting.meeting_url}\n\n{meeting.note}\n\nEduLead CRM"
+    )
+    msg = EmailMultiAlternatives(subject, body, settings.DEFAULT_FROM_EMAIL, [lead.email])
+    msg.attach("edulead-meeting.ics", ics, "text/calendar")
+    msg.send(fail_silently=False)
+    return True
+
+class MeetingViewSet(viewsets.ModelViewSet):
+    serializer_class = MeetingSerializer
+
+    def get_queryset(self):
+        employee = current_employee(self.request)
+        qs = Meeting.objects.select_related("lead", "counsellor__user", "lead__office").order_by("-scheduled_at")
+        lead_id = self.request.query_params.get("lead")
+        if lead_id:
+            qs = qs.filter(lead_id=lead_id)
+        if employee.role == Employee.ADMIN:
+            return qs
+        if employee.role == Employee.MANAGER:
+            return qs.filter(lead__office=employee.office)
+        return qs.filter(counsellor=employee)
+
+    def perform_create(self, serializer):
+        employee = current_employee(self.request)
+        if employee.role != Employee.COUNSELLOR:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only counsellors can schedule meetings.")
+        lead = serializer.validated_data["lead"]
+        if lead.assigned_counsellor_id != employee.id:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("This lead is not assigned to you.")
+        meeting_url = f"https://meet.jit.si/EduLead-{lead.id}-{uuid.uuid4().hex[:12]}"
+        meeting = serializer.save(counsellor=employee, meeting_url=meeting_url)
+        sent = False
+        try:
+            sent = _send_meeting_invitation(meeting)
+        except Exception:
+            sent = False
+        meeting.invitation_sent = sent
+        meeting.save(update_fields=["invitation_sent"])
+        LeadActivity.objects.create(
+            lead=lead, employee=employee, activity_type="REMARK",
+            remark=f"Virtual meeting scheduled for {meeting.scheduled_at}. Invitation {'sent' if sent else 'not sent'}."
+        )
 
 
 @api_view(["GET"])
