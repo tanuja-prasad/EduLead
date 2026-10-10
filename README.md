@@ -1,4 +1,4 @@
-# EduLead — Final Real-World CRM Structure
+# EduLead 
 
 EduLead is a multi-office education consultancy CRM built with React, Django REST Framework, MySQL and scikit-learn.
 
