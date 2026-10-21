@@ -25,3 +25,20 @@ dist/
 # IDE
 .vscode/
 .idea/
+
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Aiven SSL certificate
+backend/ca.pem
+*.pem
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Django generated files
+backend/staticfiles/
