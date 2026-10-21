@@ -4,9 +4,9 @@ from dotenv import load_dotenv
 BASE_DIR=Path(__file__).resolve().parent.parent; load_dotenv(BASE_DIR/'.env')
 SECRET_KEY = os.getenv(
     "SECRET_KEY",
-    "development-only-key"
+  
 )
-DEBUG = os.getenv("DEBUG", "True").lower() == "true"
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 ALLOWED_HOSTS = [
     host.strip()
     for host in os.getenv(
