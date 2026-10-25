@@ -31,6 +31,8 @@ from .serializers import (
 )
 from .services.dashboard_service import employee_performance, monthly_revenue, office_performance
 from .services.ml_service import predict_lead
+from .services.prediction_totals import active_prediction_totals
+from rest_framework.pagination import PageNumberPagination
 
 
 def current_employee(request):
@@ -158,7 +160,14 @@ class EmployeeViewSet(viewsets.ReadOnlyModelViewSet):
         return queryset.filter(office=employee.office)
 
 
+class LeadPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
 class LeadViewSet(viewsets.ModelViewSet):
+    pagination_class = LeadPagination
     serializer_class = LeadSerializer
     filter_backends = [filters.SearchFilter]
     search_fields = ["student_name", "phone", "email", "course", "country"]
@@ -483,16 +492,7 @@ def dashboard(request):
     admission_count = admissions.count()
     revenue = admissions.aggregate(total=Sum("revenue"))["total"] or 0
 
-    expected_revenue = 0
-    expected_admissions = 0
-    priority = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
-
-    for lead in leads.exclude(status__in=["ENROLLED", "LOST"]):
-        prediction = lead.predictions.order_by("-created_at").first()
-        if prediction:
-            expected_revenue += float(prediction.expected_revenue)
-            expected_admissions += prediction.admission_probability / 100
-            priority[prediction.priority] = priority.get(prediction.priority, 0) + 1
+    expected_revenue, expected_admissions, priority = active_prediction_totals(leads)
 
     response = {
         "total_leads": total,

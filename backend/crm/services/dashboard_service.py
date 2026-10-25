@@ -5,6 +5,7 @@ from django.db.models.functions import ExtractMonth
 from django.utils import timezone
 
 from ..models import Admission, Employee, Lead, Office, Prediction
+from .prediction_totals import active_prediction_totals
 
 
 def money(value):
@@ -21,13 +22,7 @@ def office_performance():
         enrolled = admissions.count()
         revenue = admissions.aggregate(total=Sum("revenue"))["total"] or 0
 
-        latest_predictions = []
-        for lead in leads.exclude(status__in=["ENROLLED", "LOST"]):
-            prediction = lead.predictions.order_by("-created_at").first()
-            if prediction:
-                latest_predictions.append(float(prediction.expected_revenue))
-
-        expected_revenue = sum(latest_predictions)
+        expected_revenue, _, _ = active_prediction_totals(leads)
 
         rows.append({
             "office_id": office.id,
@@ -79,19 +74,7 @@ def monthly_revenue():
     }
 
     current_month = timezone.localdate().month
-    expected_this_month = sum(
-        float(p.expected_revenue)
-        for p in Prediction.objects.filter(
-            lead__status__in=["NEW", "CONTACTED", "INTERESTED", "COUNSELLING", "APPLICATION", "OFFER"]
-        ).order_by("lead_id", "-created_at").distinct("lead_id")
-    ) if False else 0
-
-    # MySQL does not support DISTINCT ON. Calculate latest prediction in Python.
-    latest_expected = 0
-    for lead in Lead.objects.exclude(status__in=["ENROLLED", "LOST"]):
-        prediction = lead.predictions.order_by("-created_at").first()
-        if prediction:
-            latest_expected += float(prediction.expected_revenue)
+    latest_expected, _, _ = active_prediction_totals(Lead.objects.all())
 
     rows = []
     for month in range(1, 13):

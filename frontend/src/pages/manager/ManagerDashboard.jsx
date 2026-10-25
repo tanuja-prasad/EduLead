@@ -16,7 +16,7 @@ export default function ManagerDashboard() {
 
   useEffect(() => {
     getDashboard().then(setDashboard);
-    getLeads().then((items) => setLeads(items.slice(0, 6)));
+    getLeads({ page_size: 6 }).then((items) => setLeads(items.slice(0, 6)));
   }, []);
 
   return (

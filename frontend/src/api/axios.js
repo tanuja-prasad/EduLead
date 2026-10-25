@@ -2,10 +2,9 @@ import axios from "axios";
 
 
 
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 
-           "https://edulead-7pfd.onrender.com/api/",
-});
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "https://edulead-7pfd.onrender.com/api/";
+
+const api = axios.create({ baseURL: API_BASE_URL, timeout: 30000 });
 
 function clearSession() {
   localStorage.removeItem("accessToken");
