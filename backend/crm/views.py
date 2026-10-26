@@ -1,15 +1,20 @@
 import os
 import uuid
 from datetime import timedelta, timezone as dt_timezone
-
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Q, Sum, OuterRef, Subquery
 from django.utils import timezone
+from django.core.cache import cache
+from django.db.models.functions import ExtractMonth
+from calendar import month_abbr
+from collections import defaultdict
+import logging
+import time
 from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -29,9 +34,7 @@ from .serializers import (
     PredictionSerializer,
     SignupSerializer,
 )
-from .services.dashboard_service import employee_performance, monthly_revenue, office_performance
 from .services.ml_service import predict_lead
-from .services.prediction_totals import active_prediction_totals
 from rest_framework.pagination import PageNumberPagination
 
 
@@ -477,50 +480,188 @@ class MeetingViewSet(viewsets.ModelViewSet):
         )
 
 
+# Dashboard helpers use grouped queries instead of querying each office/employee.
+def _prediction_stats(leads):
+    latest = Prediction.objects.filter(lead_id=OuterRef("pk")).order_by("-created_at", "-pk")
+    rows = (leads.exclude(status__in=["ENROLLED", "LOST"])
+            .order_by()
+            .annotate(
+                predicted_revenue=Subquery(latest.values("expected_revenue")[:1]),
+                predicted_probability=Subquery(latest.values("admission_probability")[:1]),
+                predicted_priority=Subquery(latest.values("priority")[:1]),
+            ).values("office_id", "predicted_revenue", "predicted_probability", "predicted_priority"))
+
+    office = defaultdict(lambda: {"revenue": 0.0, "admissions": 0.0})
+    priority = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    revenue = 0.0
+    admissions = 0.0
+    for row in rows.iterator(chunk_size=1000):
+        amount = float(row["predicted_revenue"] or 0)
+        probability = float(row["predicted_probability"] or 0) / 100
+        revenue += amount
+        admissions += probability
+        office[row["office_id"]]["revenue"] += amount
+        office[row["office_id"]]["admissions"] += probability
+        label = row["predicted_priority"]
+        if label in priority:
+            priority[label] += 1
+    return revenue, admissions, priority, office
+
+
+def _office_performance_fast(office_predictions):
+    lead_counts = {
+        row["office_id"]: row["total"]
+        for row in Lead.objects.order_by().values("office_id").annotate(total=Count("id"))
+    }
+    admission_stats = {
+        row["lead__office_id"]: row
+        for row in Admission.objects.order_by().values("lead__office_id")
+        .annotate(total=Count("id"), revenue=Sum("revenue"))
+    }
+    result = []
+    for branch in Office.objects.filter(active=True):
+        total = lead_counts.get(branch.id, 0)
+        adm = admission_stats.get(branch.id, {})
+        count = adm.get("total", 0)
+        actual = float(adm.get("revenue") or 0)
+        expected = office_predictions.get(branch.id, {}).get("revenue", 0.0)
+        expense = float(branch.monthly_expense or 0)
+        result.append({
+            "office_id": branch.id,
+            "office": branch.name,
+            "city": branch.city,
+            "leads": total,
+            "admissions": count,
+            "conversion": round(count * 100 / total, 1) if total else 0,
+            "revenue": actual,
+            "expected_revenue": round(expected, 2),
+            "monthly_expense": expense,
+            "projected_profit": round(actual + expected - expense, 2),
+        })
+    return result
+
+
+def _employee_performance_fast(role):
+    field = "assigned_manager_id" if role == Employee.MANAGER else "assigned_counsellor_id"
+    lead_stats = {
+        row[field]: row
+        for row in Lead.objects.exclude(**{f"{field}__isnull": True})
+        .order_by().values(field).annotate(
+            assigned=Count("id"),
+            converted=Count("id", filter=Q(status="ENROLLED")),
+        )
+    }
+    revenue_stats = {
+        row[f"lead__{field}"]: float(row["revenue"] or 0)
+        for row in Admission.objects.exclude(**{f"lead__{field}__isnull": True})
+        .order_by().values(f"lead__{field}").annotate(revenue=Sum("revenue"))
+    }
+    result = []
+    for employee in Employee.objects.filter(role=role, active=True).select_related("user", "office"):
+        counts = lead_stats.get(employee.id, {})
+        assigned = counts.get("assigned", 0)
+        converted = counts.get("converted", 0)
+        result.append({
+            "id": employee.id,
+            "name": employee.user.get_full_name() or employee.user.username,
+            "office": employee.office.name if employee.office else "All Offices",
+            "assigned": assigned,
+            "converted": converted,
+            "conversion": round(converted * 100 / assigned, 1) if assigned else 0,
+            "revenue": revenue_stats.get(employee.id, 0.0),
+        })
+    return result
+
+
+def _monthly_revenue_fast(expected_revenue):
+    year = timezone.localdate().year
+    actual = {
+        row["month"]: float(row["revenue"] or 0)
+        for row in Admission.objects.filter(admitted_on__year=year)
+        .order_by().annotate(month=ExtractMonth("admitted_on"))
+        .values("month").annotate(revenue=Sum("revenue"))
+    }
+    current_month = timezone.localdate().month
+    return [
+        {
+            "month": month_abbr[month],
+            "actual_revenue": actual.get(month, 0.0),
+            "expected_revenue": round(actual.get(month, 0.0) + (expected_revenue if month == current_month else 0), 2),
+        }
+        for month in range(1, 13)
+    ]
+
+
 @api_view(["GET"])
 def dashboard(request):
     employee = current_employee(request)
-    leads = Lead.objects.all()
+    if employee is None:
+        return Response({"detail": "Employee profile not found."}, status=403)
 
+    # Separate caches per user and database environment. Invalidate after writes
+    # if immediate consistency is required; otherwise values may be 60s old.
+    cache_key = f"edulead_dashboard_v5_{employee.role}_{employee.id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return Response(cached)
+
+    started = time.perf_counter()
+    leads = Lead.objects.all()
     if employee.role == Employee.MANAGER:
         leads = leads.filter(office=employee.office)
     elif employee.role == Employee.COUNSELLOR:
         leads = leads.filter(assigned_counsellor=employee)
 
-    total = leads.count()
-    admissions = Admission.objects.filter(lead__in=leads)
-    admission_count = admissions.count()
-    revenue = admissions.aggregate(total=Sum("revenue"))["total"] or 0
+    totals = leads.order_by().aggregate(
+        total=Count("id"),
+        new=Count("id", filter=Q(status="NEW")),
+        active=Count("id", filter=~Q(status__in=["ENROLLED", "LOST"])),
+    )
+    total = totals["total"]
+    admissions = Admission.objects.filter(lead__in=leads).aggregate(
+        count=Count("id"), revenue=Sum("revenue")
+    )
+    admission_count = admissions["count"]
+    revenue = float(admissions["revenue"] or 0)
 
-    expected_revenue, expected_admissions, priority = active_prediction_totals(leads)
+    expected_revenue, expected_admissions, priority, office_predictions = _prediction_stats(leads)
 
     response = {
         "total_leads": total,
-        "new_leads": leads.filter(status="NEW").count(),
-        "active_pipeline": leads.exclude(status__in=["ENROLLED", "LOST"]).count(),
-        "followups_due": FollowUp.objects.filter(lead__in=leads, completed=False, followup_at__lte=timezone.now() + timezone.timedelta(days=1)).count(),
+        "new_leads": totals["new"],
+        "active_pipeline": totals["active"],
+        "followups_due": FollowUp.objects.filter(
+            lead__in=leads, completed=False,
+            followup_at__lte=timezone.now() + timezone.timedelta(days=1),
+        ).count(),
         "admissions": admission_count,
         "conversion_rate": round(admission_count * 100 / total, 1) if total else 0,
-        "total_revenue": float(revenue),
+        "total_revenue": revenue,
         "expected_admissions": round(expected_admissions, 1),
         "expected_revenue": round(expected_revenue, 2),
         "lead_priority": priority,
         "source_performance": list(
-            leads.values("source")
-            .annotate(total=Count("id"), converted=Count("id", filter=Q(status="ENROLLED")))
-            .order_by("-converted", "-total")
+            leads.order_by().values("source").annotate(
+                total=Count("id"),
+                converted=Count("id", filter=Q(status="ENROLLED")),
+            ).order_by("-converted", "-total")
         ),
     }
 
     if employee.role == Employee.ADMIN:
-        offices = office_performance()
-        total_expense = sum(row["monthly_expense"] for row in offices)
+        offices = _office_performance_fast(office_predictions)
+        expenses = sum(row["monthly_expense"] for row in offices)
         response.update({
             "office_performance": offices,
-            "monthly_revenue": monthly_revenue(),
-            "manager_performance": employee_performance(Employee.MANAGER),
-            "counsellor_performance": employee_performance(Employee.COUNSELLOR),
-            "projected_profit": round(float(revenue) + expected_revenue - total_expense, 2),
+            "monthly_revenue": _monthly_revenue_fast(expected_revenue),
+            "manager_performance": _employee_performance_fast(Employee.MANAGER),
+            "counsellor_performance": _employee_performance_fast(Employee.COUNSELLOR),
+            "projected_profit": round(revenue + expected_revenue - expenses, 2),
         })
 
+    logging.getLogger(__name__).warning(
+        "EduLead dashboard role=%s elapsed=%.2fs",
+        employee.role, time.perf_counter() - started,
+    )
+    cache.set(cache_key, response, timeout=60)
     return Response(response)
